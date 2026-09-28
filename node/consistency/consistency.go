@@ -9,8 +9,8 @@ import (
 type ReadConsistency int
 
 const (
-	leaderRead ReadConsistency = iota
-	anyNodeRead
+	LeaderRead ReadConsistency = iota
+	AnyNodeRead
 )
 
 type Consistency interface {
