@@ -1,25 +1,22 @@
 package store
 
 import (
+	"distributedkvstore/consistency"
 	"encoding/json"
 	"errors"
 	"sync"
 	"time"
-
-	"distributedkvstore/consistency"
 
 	"github.com/hashicorp/raft"
 )
 
 var _raftTimeout = 5 * time.Minute
 
-type operation string
-
 const (
-	create operation = "create"
-	read   operation = "read"
-	delete operation = "delete"
-	update operation = "update"
+	_create = "create"
+	_read   = "read"
+	_delete = "delete"
+	_update = "update"
 )
 
 type Store interface {
@@ -37,7 +34,7 @@ type store struct {
 }
 
 type command struct {
-	operation operation
+	operation string
 	key       string
 	value     string
 }
@@ -47,7 +44,7 @@ func (s *store) Create(key string, val string) error {
 		return errors.New("follower unable to create")
 	}
 	cmd := command{
-		operation: create,
+		operation: _create,
 		key:       key,
 		value:     val,
 	}
@@ -71,10 +68,29 @@ func (s *store) Delete(key string) error {
 	if s.raft.State() != raft.Leader {
 		return errors.New("follower unable to delete")
 	}
+	cmd := command{
+		operation: _delete,
+		key:       key,
+	}
+	cmdMarshaled, err := json.Marshal(cmd)
+	if err != nil {
+		return errors.New("unable to marshal command")
+	}
+	return s.raft.Apply(cmdMarshaled, _raftTimeout).Error()
 }
 
-func (s *store) Update(key string, val int) error {
+func (s *store) Update(key string, val string) error {
 	if s.raft.State() != raft.Leader {
 		return errors.New("follower unable to update")
 	}
+	cmd := command{
+		operation: _update,
+		key:       key,
+		value:     val,
+	}
+	cmdMarshaled, err := json.Marshal(cmd)
+	if err != nil {
+		return errors.New("unable to marshal command")
+	}
+	return s.raft.Apply(cmdMarshaled, _raftTimeout).Error()
 }
