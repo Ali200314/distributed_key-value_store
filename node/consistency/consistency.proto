@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package consistency; 
+
+option go_package = "github.com/Ali200314/distributed_key-value_store/node/consistency";
+service ConsistencyService {
+  rpc UpdateReadConsistency (ReadConsistencyRequest) 
+  returns (ReadConsistencyResponse);
+}
+
+enum ReadConsistency {
+  LEADER_READ = 0;
+  ANY_NODE_READ = 1;
+}
+
+message ReadConsistencyRequest {
+  ReadConsistency consistency = 1;
+}
+
+message ReadConsistencyResponse {
+}

@@ -2,14 +2,46 @@ package consistency
 
 import (
 	"context"
+	"log"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	hdr "github.com/HdrHistogram/hdrhistogram-go"
+	"github.com/shirou/gopsutil/process"
 )
 
-type ReadConsistency int32
+type server struct {
+	UnimplementedConsistencyServiceServer
+	clients            []consistencyServiceClient
+	mtx                sync.Mutex
+	histogram          *hdr.Histogram
+	readConsistency    int32
+	shutdown           chan bool
+	CurReadConsistency int32
+}
+
+func (s *server) UpdateConsistency(ctx context.Context, req *ReadConsistencyRequest) *ReadConsistencyResponse {
+	switch req.Consistency {
+	case ReadConsistency_LEADER_READ:
+		atomic.StoreInt32(
+			&s.CurReadConsistency,
+			int32(LeaderRead),
+		)
+
+	case ReadConsistency_ANY_NODE_READ:
+		atomic.StoreInt32(
+			&s.CurReadConsistency,
+			int32(AnyNodeRead),
+		)
+
+	default:
+		return &ReadConsistencyResponse{}
+	}
+
+	return &ReadConsistencyResponse{}
+}
 
 const (
 	LeaderRead ReadConsistency = iota
@@ -17,53 +49,26 @@ const (
 )
 
 type Consistency interface {
-	// called by key-value API
 	RecordLatency(int64)
-
-	// called by store
 	ReadConsistency() ReadConsistency
 	StartConsistencyHeartbeat()
 	StopConsistencyHeartbeat()
 }
 
-type consistency struct {
-	mtx             sync.Mutex
-	histogram       *hdr.Histogram
-	readConsistency int32
-
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+func (s *server) RecordLatency(latency int64) {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	_ = s.histogram.RecordValue(latency)
 }
 
-func (c *consistency) RecordLatency(latency int64) {
-	c.mtx.Lock()
-	defer c.mtx.Unlock()
-
-	_ = c.histogram.RecordValue(latency)
-}
-
-func (c *consistency) ReadConsistency() ReadConsistency {
+func (s *server) ReadConsistency() ReadConsistency {
 	return ReadConsistency(
-		atomic.LoadInt32(&c.readConsistency),
+		atomic.LoadInt32(&s.readConsistency),
 	)
 }
 
-func (c *consistency) StartConsistencyHeartbeat() {
-	c.mtx.Lock()
-
-	if c.cancel != nil {
-		c.mtx.Unlock()
-		return
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	c.cancel = cancel
-
-	c.wg.Add(1)
-	c.mtx.Unlock()
-
+func (s *server) StartConsistencyHeartbeat(ctx context.Context) {
 	go func() {
-		defer c.wg.Done()
 
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
@@ -71,50 +76,44 @@ func (c *consistency) StartConsistencyHeartbeat() {
 		for {
 			select {
 			case <-ticker.C:
-				c.handleHeartbeat()
-
-			case <-ctx.Done():
+				s.HandleHeartBeat(ctx)
+			case <-s.shutdown:
 				return
 			}
 		}
 	}()
 }
 
-func (c *consistency) StopConsistencyHeartbeat() {
-	c.mtx.Lock()
-
-	if c.cancel == nil {
-		c.mtx.Unlock()
-		return
-	}
-
-	cancel := c.cancel
-	c.cancel = nil
-
-	c.mtx.Unlock()
-
-	cancel()
-	c.wg.Wait()
+func (s *server) StopConsistencyHeartbeat() {
+	s.shutdown <- true
 }
 
-func (c *consistency) handleHeartbeat() {
-	// TODO: calculate leader load.
-	load := c.calculateLeaderLoad()
+func (s *server) HandleHeartBeat(ctx context.Context) {
+	//calculate leaderload
+	pvm := s.histogram.ValueAtPercentiles([]float64{99.0})
 
-	if load > 0.8 {
+	p, _ := process.NewProcess(int32(os.Getpid()))
+	percent, err := p.CPUPercent()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if pvm[99.0] > 100 && percent > 100 {
+		for _, client := range s.clients {
+			client.UpdateReadConsistency(ctx, &ReadConsistencyRequest{Consistency: ReadConsistency_ANY_NODE_READ})
+		}
 		atomic.StoreInt32(
-			&c.readConsistency,
+			&s.CurReadConsistency,
 			int32(AnyNodeRead),
 		)
 	} else {
+		for _, client := range s.clients {
+			client.UpdateReadConsistency(ctx, &ReadConsistencyRequest{Consistency: ReadConsistency_LEADER_READ})
+		}
 		atomic.StoreInt32(
-			&c.readConsistency,
+			&s.CurReadConsistency,
 			int32(LeaderRead),
 		)
 	}
-}
 
-func (c *consistency) calculateLeaderLoad() float64 {
-	// TODO: calculate actual leader load.
-	return 0
 }
