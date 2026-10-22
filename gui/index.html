@@ -1,13 +1,359 @@
+```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" >
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GUI</title>
+  <title>My Cache</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: #f5f7fb;
+      color: #1f2937;
+      max-width: 650px;
+      margin: 40px auto;
+      padding: 20px;
+    }
+
+    h1 {
+      margin-bottom: 8px;
+    }
+
+    .subtitle {
+      color: #64748b;
+      margin-bottom: 28px;
+      line-height: 1.5;
+    }
+
+    section {
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 22px;
+      margin-bottom: 20px;
+    }
+
+    h2 {
+      font-size: 19px;
+      margin-top: 0;
+    }
+
+    label {
+      display: block;
+      margin-top: 16px;
+      margin-bottom: 6px;
+      font-size: 14px;
+      font-weight: bold;
+    }
+
+    input {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 7px;
+      font-size: 15px;
+    }
+
+    input:focus {
+      outline: 2px solid #93c5fd;
+      border-color: #2563eb;
+    }
+
+    button {
+      padding: 11px 16px;
+      border: 0;
+      border-radius: 7px;
+      font-size: 14px;
+      font-weight: bold;
+      cursor: pointer;
+      margin: 8px 5px 0 0;
+      background: #e2e8f0;
+      color: #1e293b;
+    }
+
+    button:hover {
+      opacity: 0.85;
+    }
+
+    .primary {
+      background: #2563eb;
+      color: white;
+      width: 100%;
+      margin-top: 18px;
+    }
+
+    .search-button {
+      background: #2563eb;
+      color: white;
+    }
+
+    #result {
+      padding: 13px;
+      border-radius: 7px;
+      background: #f1f5f9;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    #savedItems {
+      margin-top: 14px;
+    }
+
+    .saved-item {
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 14px;
+      margin-top: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .item-details {
+      overflow-wrap: anywhere;
+    }
+
+    .item-name {
+      font-weight: bold;
+      margin-bottom: 5px;
+    }
+
+    .item-value {
+      color: #64748b;
+    }
+
+    .remove-button {
+      color: #b91c1c;
+      background: #fee2e2;
+      flex-shrink: 0;
+    }
+
+    .empty {
+      color: #64748b;
+      font-size: 14px;
+    }
+  </style>
 </head>
-  <body>
-    
 
-  </body>
+<body>
+  <h1>My Cache</h1>
+  <p class="subtitle">
+    Save information and find it whenever you need it.
+  </p>
+
+  <section>
+    <h2>Save information</h2>
+    <p class="subtitle">
+      Give your information a name so you can find it later.
+    </p>
+
+    <label for="key">Name</label>
+    <input
+      id="key"
+      placeholder="e.g. username"
+      autocomplete="off"
+    >
+
+    <label for="value">Value</label>
+    <input
+      id="value"
+      placeholder="e.g. alex123"
+      autocomplete="off"
+    >
+
+    <button class="primary" onclick="saveEntry()">
+      Save information
+    </button>
+  </section>
+
+  <section>
+    <h2>Find information</h2>
+
+    <label for="searchKey">What are you looking for?</label>
+    <input
+      id="searchKey"
+      placeholder="Enter a name..."
+      autocomplete="off"
+    >
+
+    <button class="search-button" onclick="findEntry()">
+      Find information
+    </button>
+
+    <div id="result" style="margin-top: 16px;" role="status"
+         aria-live="polite">
+      Your search results will appear here.
+    </div>
+  </section>
+
+  <section>
+    <h2>Your saved information</h2>
+    <p class="subtitle">
+      View and manage the information you have saved.
+    </p>
+
+    <div id="savedItems">
+      <p class="empty">You haven't saved anything yet.</p>
+    </div>
+  </section>
+
+  <script>
+    // Internal settings: customers don't need to see these.
+    const leaderPort = "8080";
+    const nodes = ["8080", "8081", "8082"];
+    const readConsistencyMode = "leader-only-read";
+
+    const caches = new Map(
+      nodes.map(port => [port, new Map()])
+    );
+
+    // This browser demo simulates all nodes in one process.
+    function readFromNode(nodePort, key) {
+      return caches.get(nodePort).get(key);
+    }
+
+    function replicate(operation, key, value) {
+      for (const nodePort of nodes) {
+        const cache = caches.get(nodePort);
+
+        if (operation === "delete") {
+          cache.delete(key);
+        } else {
+          cache.set(key, value);
+        }
+      }
+    }
+
+    function read(key) {
+      if (readConsistencyMode === "leader-only-read") {
+        return readFromNode(leaderPort, key);
+      }
+
+      // In this demo, use the first node as the local node.
+      return readFromNode(nodes[0], key);
+    }
+
+    function saveEntry() {
+      const key = document.getElementById("key").value.trim();
+      const value = document.getElementById("value").value;
+
+      if (!key) {
+        return showResult("Please enter a name.");
+      }
+
+      if (caches.get(leaderPort).has(key)) {
+        return showResult(
+          "That name already exists. Find it and change its value instead."
+        );
+      }
+
+      replicate("create", key, value);
+
+      document.getElementById("key").value = "";
+      document.getElementById("value").value = "";
+
+      showResult("Your information has been saved successfully.");
+      renderSavedItems();
+    }
+
+    function findEntry() {
+      const key = document.getElementById("searchKey").value.trim();
+
+      if (!key) {
+        return showResult("Please enter a name to search for.");
+      }
+
+      const value = read(key);
+
+      if (value === undefined) {
+        return showResult("We couldn't find that information.");
+      }
+
+      showResult("Found it! Value: " + value);
+    }
+
+    function updateEntry(key) {
+      const newValue = prompt("Enter the new value:");
+
+      if (newValue === null) return;
+
+      replicate("update", key, newValue);
+
+      showResult("Your information has been updated.");
+      renderSavedItems();
+    }
+
+    function deleteEntry(key) {
+      const confirmed = confirm(
+        "Are you sure you want to remove this information?"
+      );
+
+      if (!confirmed) return;
+
+      replicate("delete", key);
+
+      showResult("Your information has been removed.");
+      renderSavedItems();
+    }
+
+    function showResult(message) {
+      document.getElementById("result").textContent = message;
+    }
+
+    function renderSavedItems() {
+      const container = document.getElementById("savedItems");
+      const cache = caches.get(leaderPort);
+
+      container.replaceChildren();
+
+      if (cache.size === 0) {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "You haven't saved anything yet.";
+        container.appendChild(empty);
+        return;
+      }
+
+      for (const [key, value] of cache) {
+        const item = document.createElement("div");
+        item.className = "saved-item";
+
+        const details = document.createElement("div");
+        details.className = "item-details";
+
+        const name = document.createElement("div");
+        name.className = "item-name";
+        name.textContent = key;
+
+        const content = document.createElement("div");
+        content.className = "item-value";
+        content.textContent = value;
+
+        details.append(name, content);
+
+        const actions = document.createElement("div");
+
+        const edit = document.createElement("button");
+        edit.textContent = "Change";
+        edit.onclick = () => updateEntry(key);
+
+        const remove = document.createElement("button");
+        remove.textContent = "Remove";
+        remove.className = "remove-button";
+        remove.onclick = () => deleteEntry(key);
+
+        actions.append(edit, remove);
+        item.append(details, actions);
+        container.appendChild(item);
+      }
+    }
+  </script>
+</body>
 </html>
-
+```
