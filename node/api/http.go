@@ -1,17 +1,21 @@
 package api
 
 import (
+	"distributedkvstore/consistency"
+	"distributedkvstore/store"
 	"encoding/json"
 	"net/http"
 	"time"
-
-	"distributedkvstore/consistency"
-	"distributedkvstore/store"
 )
 
 type HTTPServer struct {
 	store       store.Store
 	consistency consistency.Consistency
+}
+
+func (h *HTTPServer) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	//TODO implement me
+	panic("implement me")
 }
 
 func NewHTTPServer(s store.Store) *HTTPServer {

@@ -1,10 +1,14 @@
 package main
 
 import (
+	"distributedkvstore/api"
+	"distributedkvstore/consistency"
+	"distributedkvstore/store"
 	"flag"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"time"
 
@@ -29,7 +33,21 @@ func main() {
 	if err != nil {
 		log.Fatal("unable to create snapshot")
 	}
-	r,err:=raft.NewRaft(cfg,, fsm raft.FSM, logs raft.LogStore, stable raft.StableStore, snaps raft.SnapshotStore, trans raft.Transport)
+	consistency := consistency.New()
+	fsm := store.NewFSM()
+	raft, err := raft.NewRaft(
+		cfg,
+		fsm,
+		raft.NewInmemStore(),
+		raft.NewInmemStore(),
+		snapshots,
+		transport,
+	)
+	store := store.New(raft, consistency)
+	serv := api.NewHTTPServer(store)
+	if err := http.ListenAndServe(fmt.Sprintf(":%d", httpPort), serv); err != nil {
+		log.Fatal("unable to start server")
+	}
 }
 
 func parseFlags() (int, int, int, string) {
