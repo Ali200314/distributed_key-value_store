@@ -13,10 +13,8 @@ import (
 var _raftTimeout = 5 * time.Minute
 
 const (
-	_create = "create"
-	_read   = "read"
+	_set    = "set"
 	_delete = "delete"
-	_update = "update"
 )
 
 type Store interface {
@@ -31,18 +29,14 @@ type store struct {
 	consistency consistency.Consistency
 	values      map[string]string
 	mtx         sync.Mutex
+	fsm         *Fsm
 }
 
-type command struct {
-	operation string
-	key       string
-	value     string
-}
-
-func New(r *raft.Raft, c consistency.Consistency) Store {
+func New(r *raft.Raft, c consistency.Consistency, f *Fsm) Store {
 	return &store{
 		raft:        r,
 		consistency: c,
+		fsm:         f,
 	}
 }
 
@@ -51,9 +45,9 @@ func (s *store) Create(key string, val string) error {
 		return errors.New("follower unable to create")
 	}
 	cmd := command{
-		operation: _create,
-		key:       key,
-		value:     val,
+		Operation: _set,
+		Key:       key,
+		Value:     val,
 	}
 	cmdMarshaled, err := json.Marshal(cmd)
 	if err != nil {
@@ -68,7 +62,7 @@ func (s *store) Read(key string) (string, error) {
 	}
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
-	return s.values[key], nil
+	return s.fsm.Read(key), nil
 }
 
 func (s *store) Delete(key string) error {
@@ -76,8 +70,8 @@ func (s *store) Delete(key string) error {
 		return errors.New("follower unable to delete")
 	}
 	cmd := command{
-		operation: _delete,
-		key:       key,
+		Operation: _delete,
+		Key:       key,
 	}
 	cmdMarshaled, err := json.Marshal(cmd)
 	if err != nil {
@@ -91,17 +85,13 @@ func (s *store) Update(key string, val string) error {
 		return errors.New("follower unable to update")
 	}
 	cmd := command{
-		operation: _update,
-		key:       key,
-		value:     val,
+		Operation: _set,
+		Key:       key,
+		Value:     val,
 	}
 	cmdMarshaled, err := json.Marshal(cmd)
 	if err != nil {
 		return errors.New("unable to marshal command")
 	}
 	return s.raft.Apply(cmdMarshaled, _raftTimeout).Error()
-}
-
-func (s *store) Apply(l *raft.Log) interface{} {
-	return nil
 }

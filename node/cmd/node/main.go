@@ -15,21 +15,28 @@ import (
 	"github.com/hashicorp/raft"
 )
 
+var configuration = raft.Configuration{Servers: []raft.Server{
+	{ID: raft.ServerID("1"), Address: raft.ServerAddress(raft.ServerAddress("127.0.0.1:8081"))},
+	{ID: raft.ServerID("2"), Address: raft.ServerAddress(raft.ServerAddress("127.0.0.1:8082"))},
+	{ID: raft.ServerID("3"), Address: raft.ServerAddress(raft.ServerAddress("127.0.0.1:8083"))},
+}}
+
 func main() {
-	id, grpcPort, httpPort, peersRaw := parseFlags()
+	id, grpcPort, httpPort := parseFlags()
 
 	cfg := raft.DefaultConfig()
-	cfg.LocalID = raft.ServerID(id)
-
-	addr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf(":%d", grpcPort))
+	//cfg.LogOutput = io.Discard
+	cfg.LocalID = raft.ServerID(fmt.Sprint(id))
+	addr := fmt.Sprintf("127.0.0.1:%d", grpcPort)
+	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
 		log.Fatal("unable to resolve tcp address")
 	}
-	transport, err := raft.NewTCPTransport(fmt.Sprintf(":%d", grpcPort), addr, 3, 5*time.Second, os.Stderr)
+	transport, err := raft.NewTCPTransport(addr, tcpAddr, 3, 5*time.Second, os.Stderr)
 	if err != nil {
-		log.Fatal("unable to create tcp transport")
+		log.Fatalf("unable to create tcp transport: %s", err)
 	}
-	snapshots, err := raft.NewFileSnapshotStore(fmt.Sprintf(":%d", grpcPort), 3, os.Stderr)
+	snapshots, err := raft.NewFileSnapshotStore(fmt.Sprintf("./tmp/data-%d", id), 3, os.Stderr)
 	if err != nil {
 		log.Fatal("unable to create snapshot")
 	}
@@ -43,18 +50,24 @@ func main() {
 		snapshots,
 		transport,
 	)
-	store := store.New(raft, consistency)
-	serv := api.NewHTTPServer(store)
-	if err := http.ListenAndServe(fmt.Sprintf(":%d", httpPort), serv); err != nil {
+	if err := raft.BootstrapCluster(configuration).Error(); err != nil {
+		log.Fatalf("unable to bootstrap cluster: %v", err)
+	}
+	store := store.New(raft, consistency, fsm)
+	serv := api.NewHTTPServer(store, consistency)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/values", serv.Read)
+	mux.HandleFunc("DELETE /api/values", serv.Delete)
+	mux.HandleFunc("POST /api/values", serv.Create)
+	if err := http.ListenAndServe(fmt.Sprintf(":%d", httpPort), mux); err != nil {
 		log.Fatal("unable to start server")
 	}
 }
 
-func parseFlags() (int, int, int, string) {
+func parseFlags() (int, int, int) {
 	id := flag.Int("id", 0, "Node ID")
 	grpcPort := flag.Int("grpc-port", 0, "GRPC listening port")
 	httpPort := flag.Int("http-port", 0, "HTTP listening port")
-	peersRaw := flag.String("peers", "", "Comma-separated peer addresses")
 
 	flag.Parse()
 
@@ -67,8 +80,5 @@ func parseFlags() (int, int, int, string) {
 	if *httpPort == 0 {
 		log.Fatal("No HTTP port specified")
 	}
-	if *peersRaw == "" {
-		log.Fatal("No peers specified")
-	}
-	return *id, *grpcPort, *httpPort, *peersRaw
+	return *id, *grpcPort, *httpPort
 }

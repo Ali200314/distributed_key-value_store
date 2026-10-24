@@ -22,6 +22,12 @@ type server struct {
 	CurReadConsistency int32
 }
 
+func New() Consistency {
+	return &server{
+		histogram: hdr.New(1, 50_000, 4),
+	}
+}
+
 func (s *server) UpdateConsistency(ctx context.Context, req *ReadConsistencyRequest) *ReadConsistencyResponse {
 	switch req.Consistency {
 	case ReadConsistency_LEADER_READ:
@@ -53,10 +59,6 @@ type Consistency interface {
 	ReadConsistency() ReadConsistency
 	StartConsistencyHeartbeat(context.Context)
 	StopConsistencyHeartbeat()
-}
-
-func New() Consistency {
-	return &server{}
 }
 
 func (s *server) RecordLatency(latency int64) {

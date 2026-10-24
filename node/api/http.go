@@ -4,6 +4,7 @@ import (
 	"distributedkvstore/consistency"
 	"distributedkvstore/store"
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 )
@@ -13,14 +14,10 @@ type HTTPServer struct {
 	consistency consistency.Consistency
 }
 
-func (h *HTTPServer) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	//TODO implement me
-	panic("implement me")
-}
-
-func NewHTTPServer(s store.Store) *HTTPServer {
+func NewHTTPServer(s store.Store, c consistency.Consistency) *HTTPServer {
 	return &HTTPServer{
-		store: s,
+		store:       s,
+		consistency: c,
 	}
 }
 
@@ -46,8 +43,9 @@ func (h *HTTPServer) Read(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	w.Write([]byte(val))
+	log.Printf("value: %s", val)
 	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(val))
 }
 
 func (h *HTTPServer) Create(w http.ResponseWriter, req *http.Request) {
