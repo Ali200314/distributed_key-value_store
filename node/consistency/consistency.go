@@ -51,8 +51,12 @@ const (
 type Consistency interface {
 	RecordLatency(int64)
 	ReadConsistency() ReadConsistency
-	StartConsistencyHeartbeat()
+	StartConsistencyHeartbeat(context.Context)
 	StopConsistencyHeartbeat()
+}
+
+func New() Consistency {
+	return &server{}
 }
 
 func (s *server) RecordLatency(latency int64) {
@@ -69,7 +73,6 @@ func (s *server) ReadConsistency() ReadConsistency {
 
 func (s *server) StartConsistencyHeartbeat(ctx context.Context) {
 	go func() {
-
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 
@@ -89,7 +92,7 @@ func (s *server) StopConsistencyHeartbeat() {
 }
 
 func (s *server) HandleHeartBeat(ctx context.Context) {
-	//calculate leaderload
+	// calculate leaderload
 	pvm := s.histogram.ValueAtPercentiles([]float64{99.0})
 
 	p, _ := process.NewProcess(int32(os.Getpid()))
@@ -115,5 +118,4 @@ func (s *server) HandleHeartBeat(ctx context.Context) {
 			int32(LeaderRead),
 		)
 	}
-
 }

@@ -39,6 +39,13 @@ type command struct {
 	value     string
 }
 
+func New(r *raft.Raft, c consistency.Consistency) Store {
+	return &store{
+		raft:        r,
+		consistency: c,
+	}
+}
+
 func (s *store) Create(key string, val string) error {
 	if s.raft.State() != raft.Leader {
 		return errors.New("follower unable to create")
@@ -93,4 +100,8 @@ func (s *store) Update(key string, val string) error {
 		return errors.New("unable to marshal command")
 	}
 	return s.raft.Apply(cmdMarshaled, _raftTimeout).Error()
+}
+
+func (s *store) Apply(l *raft.Log) interface{} {
+	return nil
 }
