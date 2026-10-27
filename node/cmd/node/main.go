@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"distributedkvstore/api"
 	"distributedkvstore/consistency"
 	"distributedkvstore/store"
@@ -23,8 +24,9 @@ var configuration = raft.Configuration{Servers: []raft.Server{
 
 func main() {
 	id, grpcPort, httpPort := parseFlags()
-
+	notifyCh := make(chan bool, 1)
 	cfg := raft.DefaultConfig()
+	cfg.NotifyCh = notifyCh
 	//cfg.LogOutput = io.Discard
 	cfg.LocalID = raft.ServerID(fmt.Sprint(id))
 	addr := fmt.Sprintf("127.0.0.1:%d", grpcPort)
@@ -40,7 +42,14 @@ func main() {
 	if err != nil {
 		log.Fatal("unable to create snapshot")
 	}
-	consistency := consistency.New()
+	consistency := consistency.New(10, 10)
+	go func() {
+		for isLeader := range notifyCh {
+			if isLeader {
+				consistency.StartConsistencyHeartbeat(context.Background())
+			}
+		}
+	}()
 	fsm := store.NewFSM()
 	raft, err := raft.NewRaft(
 		cfg,

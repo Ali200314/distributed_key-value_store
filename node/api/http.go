@@ -4,7 +4,6 @@ import (
 	"distributedkvstore/consistency"
 	"distributedkvstore/store"
 	"encoding/json"
-	"log"
 	"net/http"
 	"time"
 )
@@ -43,7 +42,6 @@ func (h *HTTPServer) Read(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	log.Printf("value: %s", val)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(val))
 }

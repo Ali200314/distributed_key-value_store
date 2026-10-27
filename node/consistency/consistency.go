@@ -2,6 +2,7 @@ package consistency
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -14,17 +15,21 @@ import (
 
 type server struct {
 	UnimplementedConsistencyServiceServer
-	clients            []consistencyServiceClient
-	mtx                sync.Mutex
-	histogram          *hdr.Histogram
-	readConsistency    int32
-	shutdown           chan bool
-	CurReadConsistency int32
+	clients                 []consistencyServiceClient
+	mtx                     sync.Mutex
+	histogram               *hdr.Histogram
+	readConsistency         int32
+	shutdown                chan bool
+	CurReadConsistency      int32
+	latencyThreshold        int
+	cpuUtilizationThreshold int
 }
 
-func New() Consistency {
+func New(l, c int) Consistency {
 	return &server{
-		histogram: hdr.New(1, 50_000, 4),
+		histogram:               hdr.New(1, 50_000, 4),
+		latencyThreshold:        l,
+		cpuUtilizationThreshold: c,
 	}
 }
 
@@ -65,6 +70,7 @@ func (s *server) RecordLatency(latency int64) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 	_ = s.histogram.RecordValue(latency)
+	fmt.Printf("latency recorded: %d", latency)
 }
 
 func (s *server) ReadConsistency() ReadConsistency {
@@ -103,6 +109,9 @@ func (s *server) HandleHeartBeat(ctx context.Context) {
 		log.Fatal(err)
 	}
 
+	fmt.Printf("cpu usage: %f - ", percent)
+	fmt.Printf("p99 latency: %d - ", pvm[99])
+
 	if pvm[99.0] > 100 && percent > 100 {
 		for _, client := range s.clients {
 			client.UpdateReadConsistency(ctx, &ReadConsistencyRequest{Consistency: ReadConsistency_ANY_NODE_READ})
@@ -111,6 +120,7 @@ func (s *server) HandleHeartBeat(ctx context.Context) {
 			&s.CurReadConsistency,
 			int32(AnyNodeRead),
 		)
+		fmt.Print("any node read")
 	} else {
 		for _, client := range s.clients {
 			client.UpdateReadConsistency(ctx, &ReadConsistencyRequest{Consistency: ReadConsistency_LEADER_READ})
@@ -119,5 +129,7 @@ func (s *server) HandleHeartBeat(ctx context.Context) {
 			&s.CurReadConsistency,
 			int32(LeaderRead),
 		)
+		fmt.Print("leader read")
 	}
+	fmt.Print("\n")
 }
