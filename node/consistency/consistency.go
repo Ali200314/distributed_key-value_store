@@ -2,6 +2,7 @@ package consistency
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -14,21 +15,26 @@ import (
 
 type server struct {
 	UnimplementedConsistencyServiceServer
-	clients            []consistencyServiceClient
-	mtx                sync.Mutex
-	histogram          *hdr.Histogram
-	readConsistency    int32
-	shutdown           chan bool
-	CurReadConsistency int32
+	clients                 []ConsistencyServiceClient
+	mtx                     sync.Mutex
+	histogram               *hdr.Histogram
+	shutdown                chan bool
+	CurReadConsistency      int32
+	latencyThreshold        int
+	cpuUtilizationThreshold int
 }
 
-func New() Consistency {
+func New(l, c int, clients []ConsistencyServiceClient) *server {
 	return &server{
-		histogram: hdr.New(1, 50_000, 4),
+		histogram:               hdr.New(1, 50_000, 4),
+		shutdown:                make(chan bool, 1),
+		latencyThreshold:        l,
+		cpuUtilizationThreshold: c,
+		clients:                 clients,
 	}
 }
 
-func (s *server) UpdateConsistency(ctx context.Context, req *ReadConsistencyRequest) *ReadConsistencyResponse {
+func (s *server) UpdateReadConsistency(ctx context.Context, req *ReadConsistencyRequest) (*ReadConsistencyResponse, error) {
 	switch req.Consistency {
 	case ReadConsistency_LEADER_READ:
 		atomic.StoreInt32(
@@ -43,10 +49,10 @@ func (s *server) UpdateConsistency(ctx context.Context, req *ReadConsistencyRequ
 		)
 
 	default:
-		return &ReadConsistencyResponse{}
+		return &ReadConsistencyResponse{}, nil
 	}
 
-	return &ReadConsistencyResponse{}
+	return &ReadConsistencyResponse{}, nil
 }
 
 const (
@@ -69,7 +75,7 @@ func (s *server) RecordLatency(latency int64) {
 
 func (s *server) ReadConsistency() ReadConsistency {
 	return ReadConsistency(
-		atomic.LoadInt32(&s.readConsistency),
+		atomic.LoadInt32(&s.CurReadConsistency),
 	)
 }
 
@@ -103,14 +109,21 @@ func (s *server) HandleHeartBeat(ctx context.Context) {
 		log.Fatal(err)
 	}
 
-	if pvm[99.0] > 100 && percent > 100 {
+	fmt.Printf("cpu usage: %f - ", percent)
+	fmt.Printf("p99 latency: %d - ", pvm[99])
+
+	if pvm[99.0] > 100 && percent > 1 {
 		for _, client := range s.clients {
-			client.UpdateReadConsistency(ctx, &ReadConsistencyRequest{Consistency: ReadConsistency_ANY_NODE_READ})
+			_, err := client.UpdateReadConsistency(ctx, &ReadConsistencyRequest{Consistency: ReadConsistency_ANY_NODE_READ})
+			if err != nil {
+				fmt.Println("error sending mode to clients")
+			}
 		}
 		atomic.StoreInt32(
 			&s.CurReadConsistency,
 			int32(AnyNodeRead),
 		)
+		fmt.Print("any node read")
 	} else {
 		for _, client := range s.clients {
 			client.UpdateReadConsistency(ctx, &ReadConsistencyRequest{Consistency: ReadConsistency_LEADER_READ})
@@ -119,5 +132,7 @@ func (s *server) HandleHeartBeat(ctx context.Context) {
 			&s.CurReadConsistency,
 			int32(LeaderRead),
 		)
+		fmt.Print("leader read")
 	}
+	fmt.Print("\n")
 }

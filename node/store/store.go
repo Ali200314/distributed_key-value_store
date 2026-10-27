@@ -4,6 +4,7 @@ import (
 	"distributedkvstore/consistency"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -19,7 +20,7 @@ const (
 
 type Store interface {
 	Create(string, string) error
-	Read(string) (string, error)
+	Read(string) (string, consistency.ReadConsistency, error)
 	Delete(string) error
 	Update(string, string) error
 }
@@ -56,13 +57,15 @@ func (s *store) Create(key string, val string) error {
 	return s.raft.Apply(cmdMarshaled, _raftTimeout).Error()
 }
 
-func (s *store) Read(key string) (string, error) {
-	if s.raft.State() != raft.Leader && s.consistency.ReadConsistency() != consistency.AnyNodeRead {
-		return "", errors.New("follower unable to serve read")
+func (s *store) Read(key string) (string, consistency.ReadConsistency, error) {
+	readConsistency := s.consistency.ReadConsistency()
+	if s.raft.State() != raft.Leader && readConsistency != consistency.AnyNodeRead {
+		fmt.Printf("read consistency from non leader node: %s", readConsistency)
+		return "", readConsistency, errors.New("follower unable to serve read")
 	}
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
-	return s.fsm.Read(key), nil
+	return s.fsm.Read(key), readConsistency, nil
 }
 
 func (s *store) Delete(key string) error {

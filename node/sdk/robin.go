@@ -1,4 +1,4 @@
-package roundrobin
+package sdk
 
 type Client interface {
 	Read(key string) (string, error)

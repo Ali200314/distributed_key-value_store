@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"distributedkvstore/api"
 	"distributedkvstore/consistency"
 	"distributedkvstore/store"
@@ -13,6 +14,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 var configuration = raft.Configuration{Servers: []raft.Server{
@@ -23,8 +26,9 @@ var configuration = raft.Configuration{Servers: []raft.Server{
 
 func main() {
 	id, grpcPort, httpPort := parseFlags()
-
+	notifyCh := make(chan bool, 1)
 	cfg := raft.DefaultConfig()
+	cfg.NotifyCh = notifyCh
 	//cfg.LogOutput = io.Discard
 	cfg.LocalID = raft.ServerID(fmt.Sprint(id))
 	addr := fmt.Sprintf("127.0.0.1:%d", grpcPort)
@@ -40,7 +44,27 @@ func main() {
 	if err != nil {
 		log.Fatal("unable to create snapshot")
 	}
-	consistency := consistency.New()
+	clients := grpcClients(id)
+	c := consistency.New(10, 10, clients)
+	grpcServ := grpc.NewServer()
+	consistency.RegisterConsistencyServiceServer(grpcServ, c)
+	go func() {
+		for isLeader := range notifyCh {
+			if isLeader {
+				c.StartConsistencyHeartbeat(context.Background())
+			}
+		}
+	}()
+	go func() {
+		lis, err := net.Listen("tcp", fmt.Sprintf(":806%d", id))
+		if err != nil {
+			log.Fatalf("failed to listen: %v", err)
+		}
+		err = grpcServ.Serve(lis)
+		if err != nil {
+			log.Fatalf("failed to serve: %v", err)
+		}
+	}()
 	fsm := store.NewFSM()
 	raft, err := raft.NewRaft(
 		cfg,
@@ -53,8 +77,8 @@ func main() {
 	if err := raft.BootstrapCluster(configuration).Error(); err != nil {
 		log.Fatalf("unable to bootstrap cluster: %v", err)
 	}
-	store := store.New(raft, consistency, fsm)
-	serv := api.NewHTTPServer(store, consistency)
+	store := store.New(raft, c, fsm)
+	serv := api.NewHTTPServer(store, c)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/values", serv.Read)
 	mux.HandleFunc("DELETE /api/values", serv.Delete)
@@ -81,4 +105,19 @@ func parseFlags() (int, int, int) {
 		log.Fatal("No HTTP port specified")
 	}
 	return *id, *grpcPort, *httpPort
+}
+
+func grpcClients(id int) []consistency.ConsistencyServiceClient {
+	var clients []consistency.ConsistencyServiceClient
+	for _, serv := range configuration.Servers {
+		if string(serv.ID) == fmt.Sprint(id) {
+			continue
+		}
+		conn, err := grpc.NewClient(fmt.Sprintf("127.0.0.1:806%s", serv.ID), grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			log.Fatal("unable to create grpc client")
+		}
+		clients = append(clients, consistency.NewConsistencyServiceClient(conn))
+	}
+	return clients
 }

@@ -1,12 +1,12 @@
 package api
 
 import (
-	"distributedkvstore/consistency"
-	"distributedkvstore/store"
 	"encoding/json"
-	"log"
 	"net/http"
 	"time"
+
+	"distributedkvstore/consistency"
+	"distributedkvstore/store"
 )
 
 type HTTPServer struct {
@@ -32,18 +32,18 @@ func (h *HTTPServer) Read(w http.ResponseWriter, req *http.Request) {
 		latencyMs := time.Since(start).Milliseconds()
 		h.consistency.RecordLatency(latencyMs)
 	}()
-
+	time.Sleep(2 * time.Second)
 	key := req.URL.Query().Get("key")
 	if key == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	val, err := h.store.Read(key)
+	val, cons, err := h.store.Read(key)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	log.Printf("value: %s", val)
+	w.Header().Set("read-consistency", cons.String())
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(val))
 }
