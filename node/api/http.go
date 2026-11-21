@@ -40,11 +40,15 @@ func (h *HTTPServer) Read(w http.ResponseWriter, req *http.Request) {
 	}
 	val, cons, err := h.store.Read(key)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusForbidden)
 		return
 	}
 	w.Header().Set("read-consistency", cons.String())
-	w.WriteHeader(http.StatusOK)
+	if val == "" {
+		w.WriteHeader(http.StatusNotFound)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
 	w.Write([]byte(val))
 }
 

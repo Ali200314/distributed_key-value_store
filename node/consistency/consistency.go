@@ -20,11 +20,11 @@ type server struct {
 	histogram               *hdr.Histogram
 	shutdown                chan bool
 	CurReadConsistency      int32
-	latencyThreshold        int
-	cpuUtilizationThreshold int
+	latencyThreshold        int64
+	cpuUtilizationThreshold float64
 }
 
-func New(l, c int, clients []ConsistencyServiceClient) *server {
+func New(l int64, c float64, clients []ConsistencyServiceClient) *server {
 	return &server{
 		histogram:               hdr.New(1, 50_000, 4),
 		shutdown:                make(chan bool, 1),
@@ -63,8 +63,8 @@ const (
 type Consistency interface {
 	RecordLatency(int64)
 	ReadConsistency() ReadConsistency
-	StartConsistencyHeartbeat(context.Context)
-	StopConsistencyHeartbeat()
+	StartHeartbeat(context.Context)
+	StopHeartbeat()
 }
 
 func (s *server) RecordLatency(latency int64) {
@@ -79,7 +79,7 @@ func (s *server) ReadConsistency() ReadConsistency {
 	)
 }
 
-func (s *server) StartConsistencyHeartbeat(ctx context.Context) {
+func (s *server) StartHeartbeat(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
@@ -95,13 +95,14 @@ func (s *server) StartConsistencyHeartbeat(ctx context.Context) {
 	}()
 }
 
-func (s *server) StopConsistencyHeartbeat() {
+func (s *server) StopHeartbeat() {
 	s.shutdown <- true
 }
 
 func (s *server) HandleHeartBeat(ctx context.Context) {
 	// calculate leaderload
 	pvm := s.histogram.ValueAtPercentiles([]float64{99.0})
+	s.histogram.Reset()
 
 	p, _ := process.NewProcess(int32(os.Getpid()))
 	percent, err := p.CPUPercent()
@@ -112,7 +113,7 @@ func (s *server) HandleHeartBeat(ctx context.Context) {
 	fmt.Printf("cpu usage: %f - ", percent)
 	fmt.Printf("p99 latency: %d - ", pvm[99])
 
-	if pvm[99.0] > 100 && percent > 1 {
+	if pvm[99.0] > s.latencyThreshold && percent > 1 {
 		for _, client := range s.clients {
 			_, err := client.UpdateReadConsistency(ctx, &ReadConsistencyRequest{Consistency: ReadConsistency_ANY_NODE_READ})
 			if err != nil {

@@ -25,7 +25,7 @@ var configuration = raft.Configuration{Servers: []raft.Server{
 }}
 
 func main() {
-	id, grpcPort, httpPort := parseFlags()
+	id, grpcPort, httpPort, latency, cpuUsage := parseFlags()
 	notifyCh := make(chan bool, 1)
 	cfg := raft.DefaultConfig()
 	cfg.NotifyCh = notifyCh
@@ -45,13 +45,13 @@ func main() {
 		log.Fatal("unable to create snapshot")
 	}
 	clients := grpcClients(id)
-	c := consistency.New(10, 10, clients)
+	c := consistency.New(latency, cpuUsage, clients)
 	grpcServ := grpc.NewServer()
 	consistency.RegisterConsistencyServiceServer(grpcServ, c)
 	go func() {
 		for isLeader := range notifyCh {
 			if isLeader {
-				c.StartConsistencyHeartbeat(context.Background())
+				c.StartHeartbeat(context.Background())
 			}
 		}
 	}()
@@ -88,11 +88,12 @@ func main() {
 	}
 }
 
-func parseFlags() (int, int, int) {
+func parseFlags() (int, int, int, int64, float64) {
 	id := flag.Int("id", 0, "Node ID")
 	grpcPort := flag.Int("grpc-port", 0, "GRPC listening port")
 	httpPort := flag.Int("http-port", 0, "HTTP listening port")
-
+	latencyThreshold := flag.Int64("latency-threshold", 2000, "p99 latency read threshold in ms")
+	cpuUsageThreshold := flag.Float64("cpu-usage-threshold", 1, "cpu usage threshold in percent")
 	flag.Parse()
 
 	if *id == 0 {
@@ -104,7 +105,7 @@ func parseFlags() (int, int, int) {
 	if *httpPort == 0 {
 		log.Fatal("No HTTP port specified")
 	}
-	return *id, *grpcPort, *httpPort
+	return *id, *grpcPort, *httpPort, *latencyThreshold, *cpuUsageThreshold
 }
 
 func grpcClients(id int) []consistency.ConsistencyServiceClient {
