@@ -45,7 +45,7 @@ func main() {
 		log.Fatal("unable to create snapshot")
 	}
 	clients := grpcClients(id)
-	c := consistency.New(latency, cpuUsage, clients)
+	c := consistency.New(latency, cpuUsage, clients, id)
 	grpcServ := grpc.NewServer()
 	consistency.RegisterConsistencyServiceServer(grpcServ, c)
 	go func() {
@@ -79,11 +79,7 @@ func main() {
 	}
 	store := store.New(raft, c, fsm)
 	serv := api.NewHTTPServer(store, c)
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/values", serv.Read)
-	mux.HandleFunc("DELETE /api/values", serv.Delete)
-	mux.HandleFunc("POST /api/values", serv.Create)
-	if err := http.ListenAndServe(fmt.Sprintf(":%d", httpPort), mux); err != nil {
+	if err := http.ListenAndServe(fmt.Sprintf(":%d", httpPort), serv.Handler()); err != nil {
 		log.Fatal("unable to start server")
 	}
 }
@@ -92,8 +88,8 @@ func parseFlags() (int, int, int, int64, float64) {
 	id := flag.Int("id", 0, "Node ID")
 	grpcPort := flag.Int("grpc-port", 0, "GRPC listening port")
 	httpPort := flag.Int("http-port", 0, "HTTP listening port")
-	latencyThreshold := flag.Int64("latency-threshold", 2000, "p99 latency read threshold in ms")
-	cpuUsageThreshold := flag.Float64("cpu-usage-threshold", 1, "cpu usage threshold in percent")
+	latencyThreshold := flag.Int64("latency-threshold", 1000, "p99 latency read threshold in ms")
+	cpuUsageThreshold := flag.Float64("cpu-usage-threshold", 0.5, "cpu usage threshold in percent")
 	flag.Parse()
 
 	if *id == 0 {

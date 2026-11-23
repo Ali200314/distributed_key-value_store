@@ -23,6 +23,8 @@ type Store interface {
 	Read(string) (string, consistency.ReadConsistency, error)
 	Delete(string) error
 	Update(string, string) error
+	NodeAddresses() []string
+	LeaderAddress() string
 }
 
 type store struct {
@@ -97,4 +99,21 @@ func (s *store) Update(key string, val string) error {
 		return errors.New("unable to marshal command")
 	}
 	return s.raft.Apply(cmdMarshaled, _raftTimeout).Error()
+}
+
+func (s *store) NodeAddresses() []string {
+	var addresses []string
+	cfg := s.raft.GetConfiguration()
+	for _, serv := range cfg.Configuration().Servers {
+		addr := []byte(string(serv.Address))
+		addr[12] = '7'
+		addresses = append(addresses, string(addr))
+	}
+	return addresses
+}
+func (s *store) LeaderAddress() string {
+	addr, _ := s.raft.LeaderWithID()
+	addrStr := []byte(string(addr))
+	addrStr[12] = '7'
+	return string(addrStr)
 }

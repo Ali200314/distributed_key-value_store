@@ -7,7 +7,15 @@ import (
 
 	"distributedkvstore/consistency"
 	"distributedkvstore/store"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+var reads = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "read_requests",
+})
 
 type HTTPServer struct {
 	store       store.Store
@@ -26,14 +34,26 @@ type body struct {
 	Value string `json:"value"`
 }
 
+func (h *HTTPServer) Handler() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /values/{key}", h.Read)
+	mux.HandleFunc("DELETE /values", h.Delete)
+	mux.HandleFunc("POST /values", h.Create)
+	mux.HandleFunc("GET /nodes", h.getNodes)
+	mux.Handle("GET /metrics", promhttp.Handler())
+	mux.HandleFunc("GET /leader", h.getLeader)
+	return mux
+}
+
 func (h *HTTPServer) Read(w http.ResponseWriter, req *http.Request) {
 	start := time.Now()
+	reads.Inc()
 	defer func() {
 		latencyMs := time.Since(start).Milliseconds()
 		h.consistency.RecordLatency(latencyMs)
 	}()
 	time.Sleep(2 * time.Second)
-	key := req.URL.Query().Get("key")
+	key := req.PathValue("key")
 	if key == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		return
@@ -49,7 +69,10 @@ func (h *HTTPServer) Read(w http.ResponseWriter, req *http.Request) {
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}
-	w.Write([]byte(val))
+	if err := json.NewEncoder(w).Encode(val); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 }
 
 func (h *HTTPServer) Create(w http.ResponseWriter, req *http.Request) {
@@ -89,4 +112,21 @@ func (h *HTTPServer) Update(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *HTTPServer) getNodes(w http.ResponseWriter, req *http.Request) {
+	addresses := h.store.NodeAddresses()
+	if err := json.NewEncoder(w).Encode(addresses); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *HTTPServer) getLeader(w http.ResponseWriter, req *http.Request) {
+	if err := json.NewEncoder(w).Encode(h.store.LeaderAddress()); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }

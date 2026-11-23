@@ -10,6 +10,8 @@ import (
 	"time"
 
 	hdr "github.com/HdrHistogram/hdrhistogram-go"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/shirou/gopsutil/process"
 )
 
@@ -22,15 +24,17 @@ type server struct {
 	CurReadConsistency      int32
 	latencyThreshold        int64
 	cpuUtilizationThreshold float64
+	nodeID                  int
 }
 
-func New(l int64, c float64, clients []ConsistencyServiceClient) *server {
+func New(l int64, c float64, clients []ConsistencyServiceClient, nodeID int) *server {
 	return &server{
 		histogram:               hdr.New(1, 50_000, 4),
 		shutdown:                make(chan bool, 1),
 		latencyThreshold:        l,
 		cpuUtilizationThreshold: c,
 		clients:                 clients,
+		nodeID:                  nodeID,
 	}
 }
 
@@ -99,7 +103,18 @@ func (s *server) StopHeartbeat() {
 	s.shutdown <- true
 }
 
+var (
+	leader = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "raft_leader_id",
+		Help: "current leader",
+	})
+	consistency = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "consistency",
+	})
+)
+
 func (s *server) HandleHeartBeat(ctx context.Context) {
+	leader.Set(float64(s.nodeID))
 	// calculate leaderload
 	pvm := s.histogram.ValueAtPercentiles([]float64{99.0})
 	s.histogram.Reset()
@@ -113,13 +128,14 @@ func (s *server) HandleHeartBeat(ctx context.Context) {
 	fmt.Printf("cpu usage: %f - ", percent)
 	fmt.Printf("p99 latency: %d - ", pvm[99])
 
-	if pvm[99.0] > s.latencyThreshold && percent > 1 {
+	if pvm[99.0] >= s.latencyThreshold && percent > 1 {
 		for _, client := range s.clients {
 			_, err := client.UpdateReadConsistency(ctx, &ReadConsistencyRequest{Consistency: ReadConsistency_ANY_NODE_READ})
 			if err != nil {
 				fmt.Println("error sending mode to clients")
 			}
 		}
+		consistency.Set(float64(AnyNodeRead))
 		atomic.StoreInt32(
 			&s.CurReadConsistency,
 			int32(AnyNodeRead),
@@ -129,6 +145,7 @@ func (s *server) HandleHeartBeat(ctx context.Context) {
 		for _, client := range s.clients {
 			client.UpdateReadConsistency(ctx, &ReadConsistencyRequest{Consistency: ReadConsistency_LEADER_READ})
 		}
+		consistency.Set(float64(LeaderRead))
 		atomic.StoreInt32(
 			&s.CurReadConsistency,
 			int32(LeaderRead),
