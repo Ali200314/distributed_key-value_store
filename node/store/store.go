@@ -1,14 +1,20 @@
 package store
 
 import (
-	"distributedkvstore/consistency"
+	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/raft"
+	"google.golang.org/grpc"
+)
+
+const (
+	LeaderRead  int64 = 0
+	AnyNodeRead int64 = 1
 )
 
 var _raftTimeout = 5 * time.Minute
@@ -20,26 +26,35 @@ const (
 
 type Store interface {
 	Create(string, string) error
-	Read(string) (string, consistency.ReadConsistency, error)
+	Read(string) (string, int64, error)
 	Delete(string) error
 	Update(string, string) error
 	NodeAddresses() []string
 	LeaderAddress() string
+	SetConsistency(consistency int64)
+	SetRaft(r *raft.Raft)
+	HandleConsistencyInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error)
+	SetConsistencyInterceptor(
+		ctx context.Context,
+		method string,
+		req, reply any,
+		cc *grpc.ClientConn,
+		invoker grpc.UnaryInvoker,
+		opts ...grpc.CallOption,
+	) error
 }
 
 type store struct {
 	raft        *raft.Raft
-	consistency consistency.Consistency
+	consistency atomic.Int64
 	values      map[string]string
 	mtx         sync.Mutex
 	fsm         *Fsm
 }
 
-func New(r *raft.Raft, c consistency.Consistency, f *Fsm) Store {
+func New(f *Fsm) Store {
 	return &store{
-		raft:        r,
-		consistency: c,
-		fsm:         f,
+		fsm: f,
 	}
 }
 
@@ -59,15 +74,14 @@ func (s *store) Create(key string, val string) error {
 	return s.raft.Apply(cmdMarshaled, _raftTimeout).Error()
 }
 
-func (s *store) Read(key string) (string, consistency.ReadConsistency, error) {
-	readConsistency := s.consistency.ReadConsistency()
-	if s.raft.State() != raft.Leader && readConsistency != consistency.AnyNodeRead {
-		fmt.Printf("read consistency from non leader node: %s", readConsistency)
-		return "", readConsistency, errors.New("follower unable to serve read")
+func (s *store) Read(key string) (string, int64, error) {
+	consistency := s.consistency.Load()
+	if s.raft.State() != raft.Leader && consistency != AnyNodeRead {
+		return "", consistency, errors.New("follower unable to serve read")
 	}
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
-	return s.fsm.Read(key), readConsistency, nil
+	return s.fsm.Read(key), consistency, nil
 }
 
 func (s *store) Delete(key string) error {
@@ -101,6 +115,10 @@ func (s *store) Update(key string, val string) error {
 	return s.raft.Apply(cmdMarshaled, _raftTimeout).Error()
 }
 
+func (s *store) SetConsistency(consistency int64) {
+	s.consistency.Store(int64(consistency))
+}
+
 func (s *store) NodeAddresses() []string {
 	var addresses []string
 	cfg := s.raft.GetConfiguration()
@@ -116,4 +134,8 @@ func (s *store) LeaderAddress() string {
 	addrStr := []byte(string(addr))
 	addrStr[12] = '7'
 	return string(addrStr)
+}
+
+func (s *store) SetRaft(r *raft.Raft) {
+	s.raft = r
 }

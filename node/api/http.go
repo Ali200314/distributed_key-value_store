@@ -1,11 +1,11 @@
 package api
 
 import (
+	"distributedkvstore/latency"
 	"encoding/json"
 	"net/http"
 	"time"
 
-	"distributedkvstore/consistency"
 	"distributedkvstore/store"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -18,14 +18,16 @@ var reads = promauto.NewCounter(prometheus.CounterOpts{
 })
 
 type HTTPServer struct {
-	store       store.Store
-	consistency consistency.Consistency
+	store           store.Store
+	latencyWindow   *latency.Window
+	inflightTracker *InflightTracker
 }
 
-func NewHTTPServer(s store.Store, c consistency.Consistency) *HTTPServer {
+func NewHTTPServer(store store.Store, latencyWindow *latency.Window, inflightTracker *InflightTracker) *HTTPServer {
 	return &HTTPServer{
-		store:       s,
-		consistency: c,
+		store:           store,
+		latencyWindow:   latencyWindow,
+		inflightTracker: inflightTracker,
 	}
 }
 
@@ -34,7 +36,7 @@ type body struct {
 	Value string `json:"value"`
 }
 
-func (h *HTTPServer) Handler() *http.ServeMux {
+func (h *HTTPServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /values/{key}", h.Read)
 	mux.HandleFunc("DELETE /values", h.Delete)
@@ -42,7 +44,7 @@ func (h *HTTPServer) Handler() *http.ServeMux {
 	mux.HandleFunc("GET /nodes", h.getNodes)
 	mux.Handle("GET /metrics", promhttp.Handler())
 	mux.HandleFunc("GET /leader", h.getLeader)
-	return mux
+	return h.inflightTracker.middleware(mux)
 }
 
 func (h *HTTPServer) Read(w http.ResponseWriter, req *http.Request) {
@@ -50,9 +52,9 @@ func (h *HTTPServer) Read(w http.ResponseWriter, req *http.Request) {
 	reads.Inc()
 	defer func() {
 		latencyMs := time.Since(start).Milliseconds()
-		h.consistency.RecordLatency(latencyMs)
+		h.latencyWindow.RecordLatency(latencyMs)
 	}()
-	time.Sleep(2 * time.Second)
+	//time.Sleep(2 * time.Second)
 	key := req.PathValue("key")
 	if key == "" {
 		w.WriteHeader(http.StatusBadRequest)
@@ -63,7 +65,11 @@ func (h *HTTPServer) Read(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
-	w.Header().Set("read-consistency", cons.String())
+	consStr := "ANY_NODE_READ"
+	if cons == store.LeaderRead {
+		consStr = "LEADER_READ"
+	}
+	w.Header().Set("read-consistency", consStr)
 	if val == "" {
 		w.WriteHeader(http.StatusNotFound)
 	} else {

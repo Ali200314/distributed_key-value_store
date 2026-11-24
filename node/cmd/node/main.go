@@ -4,6 +4,7 @@ import (
 	"context"
 	"distributedkvstore/api"
 	"distributedkvstore/consistency"
+	latencyWindow "distributedkvstore/latency"
 	"distributedkvstore/store"
 	"flag"
 	"fmt"
@@ -11,9 +12,13 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"time"
+	"path/filepath"
+	"strconv"
+
+	grpcTrans "github.com/Jille/raft-grpc-transport"
 
 	"github.com/hashicorp/raft"
+	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -25,29 +30,45 @@ var configuration = raft.Configuration{Servers: []raft.Server{
 }}
 
 func main() {
-	id, grpcPort, httpPort, latency, cpuUsage := parseFlags()
+	id, grpcPort, httpPort, latency, inflight := parseFlags()
 	notifyCh := make(chan bool, 1)
 	cfg := raft.DefaultConfig()
 	cfg.NotifyCh = notifyCh
 	//cfg.LogOutput = io.Discard
 	cfg.LocalID = raft.ServerID(fmt.Sprint(id))
-	addr := fmt.Sprintf("127.0.0.1:%d", grpcPort)
-	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
+	servAddr, err := serverAddressByID(configuration, id)
 	if err != nil {
-		log.Fatal("unable to resolve tcp address")
+		panic(err)
 	}
-	transport, err := raft.NewTCPTransport(addr, tcpAddr, 3, 5*time.Second, os.Stderr)
-	if err != nil {
-		log.Fatalf("unable to create tcp transport: %s", err)
+
+	dataDir := filepath.Join("tmp", fmt.Sprintf("data-%d", id))
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		log.Fatalf("unable to create data directory: %v", err)
 	}
-	snapshots, err := raft.NewFileSnapshotStore(fmt.Sprintf("./tmp/data-%d", id), 3, os.Stderr)
+
+	snapshots, err := raft.NewFileSnapshotStore(dataDir, 3, os.Stderr)
 	if err != nil {
 		log.Fatal("unable to create snapshot")
 	}
-	clients := grpcClients(id)
-	c := consistency.New(latency, cpuUsage, clients, id)
-	grpcServ := grpc.NewServer()
-	consistency.RegisterConsistencyServiceServer(grpcServ, c)
+
+	logStore, err := raftboltdb.NewBoltStore(filepath.Join(dataDir, "raft.db"))
+	if err != nil {
+		log.Fatalf("unable to create bolt store: %v", err)
+	}
+	defer logStore.Close()
+	inflightTracker := &api.InflightTracker{}
+	latencyWindow := latencyWindow.New()
+	fsm := store.NewFSM()
+	s := store.New(fsm)
+	c := consistency.New(latencyWindow, latency, int64(inflight), inflightTracker, id, s)
+	dialOpts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithUnaryInterceptor(s.SetConsistencyInterceptor),
+	}
+	grpcServ := grpc.NewServer(grpc.UnaryInterceptor(s.HandleConsistencyInterceptor))
+	tm := grpcTrans.New(servAddr, dialOpts)
+	tm.Register(grpcServ)
+	defer tm.Close()
 	go func() {
 		for isLeader := range notifyCh {
 			if isLeader {
@@ -56,7 +77,7 @@ func main() {
 		}
 	}()
 	go func() {
-		lis, err := net.Listen("tcp", fmt.Sprintf(":806%d", id))
+		lis, err := net.Listen("tcp", fmt.Sprintf(":%d", grpcPort))
 		if err != nil {
 			log.Fatalf("failed to listen: %v", err)
 		}
@@ -65,20 +86,29 @@ func main() {
 			log.Fatalf("failed to serve: %v", err)
 		}
 	}()
-	fsm := store.NewFSM()
-	raft, err := raft.NewRaft(
+	hasState, err := raft.HasExistingState(logStore, logStore, snapshots)
+	if err != nil {
+		log.Fatalf("unable to check for existing raft state: %v", err)
+	}
+
+	r, err := raft.NewRaft(
 		cfg,
 		fsm,
-		raft.NewInmemStore(),
-		raft.NewInmemStore(),
+		logStore,
+		logStore,
 		snapshots,
-		transport,
+		tm.Transport(),
 	)
-	if err := raft.BootstrapCluster(configuration).Error(); err != nil {
-		log.Fatalf("unable to bootstrap cluster: %v", err)
+	s.SetRaft(r)
+	if err != nil {
+		log.Fatalf("unable to create raft node: %v", err)
 	}
-	store := store.New(raft, c, fsm)
-	serv := api.NewHTTPServer(store, c)
+	if !hasState {
+		if err := r.BootstrapCluster(configuration).Error(); err != nil {
+			log.Fatalf("unable to bootstrap cluster: %v", err)
+		}
+	}
+	serv := api.NewHTTPServer(s, latencyWindow, inflightTracker)
 	if err := http.ListenAndServe(fmt.Sprintf(":%d", httpPort), serv.Handler()); err != nil {
 		log.Fatal("unable to start server")
 	}
@@ -104,17 +134,12 @@ func parseFlags() (int, int, int, int64, float64) {
 	return *id, *grpcPort, *httpPort, *latencyThreshold, *cpuUsageThreshold
 }
 
-func grpcClients(id int) []consistency.ConsistencyServiceClient {
-	var clients []consistency.ConsistencyServiceClient
-	for _, serv := range configuration.Servers {
-		if string(serv.ID) == fmt.Sprint(id) {
-			continue
+func serverAddressByID(cfg raft.Configuration, id int) (raft.ServerAddress, error) {
+	targetID := raft.ServerID(strconv.Itoa(id))
+	for _, srv := range cfg.Servers {
+		if srv.ID == targetID {
+			return srv.Address, nil
 		}
-		conn, err := grpc.NewClient(fmt.Sprintf("127.0.0.1:806%s", serv.ID), grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			log.Fatal("unable to create grpc client")
-		}
-		clients = append(clients, consistency.NewConsistencyServiceClient(conn))
 	}
-	return clients
+	return "", fmt.Errorf("server ID %q not found in configuration", targetID)
 }
