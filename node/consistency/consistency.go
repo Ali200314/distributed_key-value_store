@@ -2,61 +2,50 @@ package consistency
 
 import (
 	"context"
-	"distributedkvstore/api"
 	"distributedkvstore/store"
 	"fmt"
-	"sync"
 	"time"
-
-	"distributedkvstore/latency"
-
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-type server struct {
-	mtx               sync.Mutex
-	latencyWindow     *latency.Window
-	shutdown          chan bool
-	readConsistency   int64
-	latencyThreshold  int64
-	inflightTracker   *api.InflightTracker
-	inflightThreshold int64
-	nodeID            int
-	store             store.Store
+type consistency struct {
+	latencyWindow      *Window
+	shutdown           chan bool
+	latencyUpperTH     int64
+	inflightUpperTH    int64
+	nodeID             int
+	inflightCounter    *InflightCounter
+	stabilizationCount int
+	latencyLowerTH     int64
+	inflightLowerTH    int64
+	store              store.Store
 }
 
 func New(
-	latencyWindow *latency.Window,
+	latencyWindow *Window,
 	latencyThreshold, inflightThreshold int64,
-	inflightTracker *api.InflightTracker,
-	nodeID int,
+	recoveryLatencyThreshold, recoveryInflightThreshold int64,
+	inflightCounter *InflightCounter,
 	store store.Store,
-) *server {
-	return &server{
-		latencyWindow:     latencyWindow,
-		shutdown:          make(chan bool, 1),
-		latencyThreshold:  latencyThreshold,
-		inflightTracker:   inflightTracker,
-		inflightThreshold: inflightThreshold,
-		nodeID:            nodeID,
-		store:             store,
+	nodeID int,
+) Consistency {
+	return &consistency{
+		latencyWindow:   latencyWindow,
+		shutdown:        make(chan bool, 1),
+		latencyUpperTH:  latencyThreshold,
+		inflightCounter: inflightCounter,
+		inflightUpperTH: inflightThreshold,
+		nodeID:          nodeID,
+		latencyLowerTH:  recoveryLatencyThreshold,
+		inflightLowerTH: recoveryInflightThreshold,
 	}
 }
 
 type Consistency interface {
-	RecordLatency(int64)
 	StartHeartbeat(context.Context)
 	StopHeartbeat()
 }
 
-func (s *server) RecordLatency(latency int64) {
-	s.mtx.Lock()
-	defer s.mtx.Unlock()
-	s.latencyWindow.RecordLatency(latency)
-}
-
-func (s *server) StartHeartbeat(ctx context.Context) {
+func (s *consistency) StartHeartbeat(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
@@ -72,35 +61,31 @@ func (s *server) StartHeartbeat(ctx context.Context) {
 	}()
 }
 
-func (s *server) StopHeartbeat() {
+func (s *consistency) StopHeartbeat() {
 	s.shutdown <- true
 }
 
-var (
-	leader = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "raft_leader_id",
-		Help: "current leader",
-	})
-	consistency = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "consistency",
-	})
-)
-
-func (s *server) HandleHeartBeat(ctx context.Context) {
-	leader.Set(float64(s.nodeID))
+func (s *consistency) HandleHeartBeat(ctx context.Context) {
 
 	p99 := s.latencyWindow.PercentileMs(99.0)
+	count := s.inflightCounter.Count()
 
-	count := s.inflightTracker.Count()
 	fmt.Printf("inflight req count: %d - ", count)
 	fmt.Printf("p99 latency: %d - ", p99)
 
-	if p99 > s.latencyThreshold && count > s.inflightThreshold {
+	if p99 > s.latencyUpperTH && count > s.inflightUpperTH {
+		s.stabilizationCount = 0
 		s.store.SetConsistency(store.AnyNodeRead)
-		fmt.Print("any node read")
-	} else {
-		s.store.SetConsistency(store.LeaderRead)
-		fmt.Print("leader read")
+		return
 	}
-	fmt.Print("\n")
+
+	if p99 < s.latencyLowerTH && count < s.inflightLowerTH {
+		s.stabilizationCount++
+		if s.stabilizationCount >= 8 { // e.g., 8
+			s.stabilizationCount = 0
+			s.store.SetConsistency(store.LeaderRead)
+		}
+	} else {
+		s.stabilizationCount = 0
+	}
 }

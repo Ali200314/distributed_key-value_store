@@ -12,16 +12,14 @@ import (
 	"google.golang.org/grpc"
 )
 
-const (
-	LeaderRead  int64 = 0
-	AnyNodeRead int64 = 1
-)
-
 var _raftTimeout = 5 * time.Minute
 
 const (
 	_set    = "set"
 	_delete = "delete"
+
+	LeaderRead  int64 = 0
+	AnyNodeRead int64 = 1
 )
 
 type Store interface {
@@ -31,8 +29,8 @@ type Store interface {
 	Update(string, string) error
 	NodeAddresses() []string
 	LeaderAddress() string
-	SetConsistency(consistency int64)
 	SetRaft(r *raft.Raft)
+	SetConsistency(c int64)
 	HandleConsistencyInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error)
 	SetConsistencyInterceptor(
 		ctx context.Context,
@@ -46,10 +44,13 @@ type Store interface {
 
 type store struct {
 	raft        *raft.Raft
-	consistency atomic.Int64
-	values      map[string]string
 	mtx         sync.Mutex
 	fsm         *Fsm
+	consistency atomic.Int64
+}
+
+func (s *store) SetConsistency(c int64) {
+	s.consistency.Store(c)
 }
 
 func New(f *Fsm) Store {
@@ -75,13 +76,13 @@ func (s *store) Create(key string, val string) error {
 }
 
 func (s *store) Read(key string) (string, int64, error) {
-	consistency := s.consistency.Load()
-	if s.raft.State() != raft.Leader && consistency != AnyNodeRead {
-		return "", consistency, errors.New("follower unable to serve read")
+	c := s.consistency.Load()
+	if s.raft.State() != raft.Leader && c != AnyNodeRead {
+		return "", c, errors.New("follower unable to serve read")
 	}
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
-	return s.fsm.Read(key), consistency, nil
+	return s.fsm.Read(key), c, nil
 }
 
 func (s *store) Delete(key string) error {
@@ -113,10 +114,6 @@ func (s *store) Update(key string, val string) error {
 		return errors.New("unable to marshal command")
 	}
 	return s.raft.Apply(cmdMarshaled, _raftTimeout).Error()
-}
-
-func (s *store) SetConsistency(consistency int64) {
-	s.consistency.Store(int64(consistency))
 }
 
 func (s *store) NodeAddresses() []string {

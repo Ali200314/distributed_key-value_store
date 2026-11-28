@@ -1,7 +1,7 @@
 package api
 
 import (
-	"distributedkvstore/latency"
+	"distributedkvstore/consistency"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -19,15 +19,15 @@ var reads = promauto.NewCounter(prometheus.CounterOpts{
 
 type HTTPServer struct {
 	store           store.Store
-	latencyWindow   *latency.Window
-	inflightTracker *InflightTracker
+	latencyWindow   *consistency.Window
+	inflightCounter *consistency.InflightCounter
 }
 
-func NewHTTPServer(store store.Store, latencyWindow *latency.Window, inflightTracker *InflightTracker) *HTTPServer {
+func NewHTTPServer(store store.Store, latencyWindow *consistency.Window, inflightCounter *consistency.InflightCounter) *HTTPServer {
 	return &HTTPServer{
 		store:           store,
 		latencyWindow:   latencyWindow,
-		inflightTracker: inflightTracker,
+		inflightCounter: inflightCounter,
 	}
 }
 
@@ -44,7 +44,7 @@ func (h *HTTPServer) Handler() http.Handler {
 	mux.HandleFunc("GET /nodes", h.getNodes)
 	mux.Handle("GET /metrics", promhttp.Handler())
 	mux.HandleFunc("GET /leader", h.getLeader)
-	return h.inflightTracker.middleware(mux)
+	return h.middleware(mux)
 }
 
 func (h *HTTPServer) Read(w http.ResponseWriter, req *http.Request) {

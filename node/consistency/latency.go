@@ -1,4 +1,4 @@
-package latency
+package consistency
 
 import (
 	"container/ring"
@@ -13,7 +13,7 @@ type Window struct {
 	bucket *ring.Ring
 }
 
-func New() *Window {
+func NewLatencyWindow() *Window {
 	r := ring.New(30)
 	for range 30 {
 		r.Value = hdrhistogram.New(1, 50_000, 3)

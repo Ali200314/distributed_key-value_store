@@ -4,7 +4,6 @@ import (
 	"context"
 	"distributedkvstore/api"
 	"distributedkvstore/consistency"
-	latencyWindow "distributedkvstore/latency"
 	"distributedkvstore/store"
 	"flag"
 	"fmt"
@@ -56,11 +55,11 @@ func main() {
 		log.Fatalf("unable to create bolt store: %v", err)
 	}
 	defer logStore.Close()
-	inflightTracker := &api.InflightTracker{}
-	latencyWindow := latencyWindow.New()
+	latencyWindow := consistency.NewLatencyWindow()
 	fsm := store.NewFSM()
+	inflightCounter := &consistency.InflightCounter{}
 	s := store.New(fsm)
-	c := consistency.New(latencyWindow, latency, int64(inflight), inflightTracker, id, s)
+	c := consistency.New(latencyWindow, latency, int64(inflight), 500, 2, inflightCounter, s, id)
 	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithUnaryInterceptor(s.SetConsistencyInterceptor),
@@ -108,7 +107,7 @@ func main() {
 			log.Fatalf("unable to bootstrap cluster: %v", err)
 		}
 	}
-	serv := api.NewHTTPServer(s, latencyWindow, inflightTracker)
+	serv := api.NewHTTPServer(s, latencyWindow, inflightCounter)
 	if err := http.ListenAndServe(fmt.Sprintf(":%d", httpPort), serv.Handler()); err != nil {
 		log.Fatal("unable to start server")
 	}
@@ -119,7 +118,7 @@ func parseFlags() (int, int, int, int64, float64) {
 	grpcPort := flag.Int("grpc-port", 0, "GRPC listening port")
 	httpPort := flag.Int("http-port", 0, "HTTP listening port")
 	latencyThreshold := flag.Int64("latency-threshold", 1000, "p99 latency read threshold in ms")
-	cpuUsageThreshold := flag.Float64("cpu-usage-threshold", 0.5, "cpu usage threshold in percent")
+	inflightThreshold := flag.Float64("cpu-usage-threshold", 2, "cpu usage threshold in percent")
 	flag.Parse()
 
 	if *id == 0 {
@@ -131,7 +130,7 @@ func parseFlags() (int, int, int, int64, float64) {
 	if *httpPort == 0 {
 		log.Fatal("No HTTP port specified")
 	}
-	return *id, *grpcPort, *httpPort, *latencyThreshold, *cpuUsageThreshold
+	return *id, *grpcPort, *httpPort, *latencyThreshold, *inflightThreshold
 }
 
 func serverAddressByID(cfg raft.Configuration, id int) (raft.ServerAddress, error) {
